@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>工作备忘录（Excel+文件导出）</title>
+<style>
+*{box-sizing:border-box;font-family:微软雅黑, sans-serif;}
+body{margin:0;padding:20px;background:#f5f7fa;}
+.container{max-width:1000px;margin:0 auto;background:white;padding:24px;border-radius:10px;box-shadow:0 2px 10px #00000010;}
+.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;padding-bottom:12px;border-bottom:1px solid #eee;}
+.btn{padding:8px 14px;border:none;border-radius:6px;cursor:pointer;margin-left:6px;}
+.btn-primary{background:#1677ff;color:white;}
+.btn-success{background:#00b42a;color:white;}
+.btn-warning{background:#ff7d00;color:white;}
+.btn-danger{background:#ff4d4f;color:white;}
+.form-item{margin-bottom:16px;}
+label{display:block;margin-bottom:6px;color:#333;}
+input,textarea{width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;}
+textarea{min-height:100px;}
+.upload-area{border:2px dashed #ccc;padding:20px;text-align:center;border-radius:6px;cursor:pointer;}
+.upload-area:hover{border-color:#1677ff;}
+#fileInput{display:none;}
+.file-list{margin-top:10px;max-height:160px;overflow-y:auto;}
+.file-item{padding:6px;border-bottom:1px solid #f0f0f0;font-size:14px;display:flex;justify-content:space-between;}
+.memo-item{padding:16px;border:1px solid #eee;border-radius:8px;margin-bottom:12px;}
+.memo-title{font-weight:bold;font-size:16px;}
+.memo-time{color:#999;font-size:12px;margin:4px 0;}
+.memo-content{margin:8px 0;color:#555;}
+.importExport{margin:10px 0;}
+.hidden{display:none;}
+</style>
+</head>
+<body>
+
+<div class="container">
+  <div class="header">
+    <h2>工作备忘录（Excel+文件导出）</h2>
+    <div>
+      <button class="btn btn-success" onclick="exportExcel()">导出 Excel</button>
+      <button class="btn btn-warning" onclick="exportAllFiles()">导出所有附件</button>
+      <button class="btn btn-primary" onclick="importData()">导入数据</button>
+      <input type="file" id="importFile" class="hidden" accept=".xlsx, .xls" onchange="doImport(event)">
+    </div>
+  </div>
+
+  <div class="form-item">
+    <label>标题</label>
+    <input id="title" placeholder="输入标题">
+  </div>
+  <div class="form-item">
+    <label>内容</label>
+    <textarea id="content" placeholder="输入备忘录内容"></textarea>
+  </div>
+
+  <div class="form-item">
+    <label>上传文件/文件夹</label>
+    <div class="upload-area" onclick="document.getElementById('fileInput').click()">
+      点击选择文件或文件夹（支持多选）
+    </div>
+    <input type="file" id="fileInput" multiple webkitdirectory directory onchange="selectFiles(event)">
+    <div class="file-list" id="fileList"></div>
+  </div>
+
+  <button class="btn btn-primary" onclick="saveMemo()">保存备忘录</button>
+  <button class="btn" onclick="clearForm()">清空</button>
+
+  <div id="memos" style="margin-top:30px;"></div>
+</div>
+
+<!-- Excel 库 -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<!-- 压缩库 -->
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<!-- 文件下载库 -->
+<script src="https://cdn.jsdelivr.net/npm/file-saver@2.0.5/dist/FileSaver.min.js"></script>
+
+<script>
+let files = [];
+let editingId = null;
+
+function $(id) { return document.getElementById(id); }
+
+function selectFiles(e) {
+  files = Array.from(e.target.files);
+  showFiles();
+}
+
+function showFiles() {
+  let html = files.map((f,i) => `
+  <div class="file-item">
+    <span>${f.name} (${(f.size/1024).toFixed(1)}KB)</span>
+    <button onclick="delFile(${i})" style="border:none;background:none;color:red;cursor:pointer">×</button>
+  </div>`).join('');
+  $('fileList').innerHTML = html;
+}
+
+function delFile(i) {
+  files.splice(i,1);
+  showFiles();
+}
+
+function saveMemo() {
+  let title = $('title').value.trim();
+  let content = $('content').value.trim();
+  if(!title) return alert('请填写标题');
+
+  let memos = getMemos();
+  let now = new Date().toLocaleString();
+
+  let fileData = files.map(f => ({
+    name: f.name,
+    size: f.size,
+    type: f.type,
+    base64: null
+  }));
+
+  let item = {
+    id: editingId || Date.now().toString(),
+    title, content, time: now, files: fileData
+  };
+
+  if(editingId) {
+    memos = memos.map(m => m.id === editingId ? item : m);
+  } else {
+    memos.unshift(item);
+  }
+
+  saveMemos(memos);
+  clearForm();
+  render();
+}
+
+function clearForm() {
+  $('title').value = '';
+  $('content').value = '';
+  files = [];
+  showFiles();
+  editingId = null;
+}
+
+function render() {
+  let memos = getMemos();
+  let html = memos.map(m => `
+  <div class="memo-item">
+    <div class="memo-title">${m.title}</div>
+    <div class="memo-time">${m.time}</div>
+    <div class="memo-content">${m.content}</div>
+    <div style="font-size:13px;color:#1677ff">
+      附件：${m.files.length} 个
+    </div>
+    <div style="margin-top:8px;">
+      <button class="btn" onclick="editMemo('${m.id}')">编辑</button>
+      <button class="btn btn-danger" onclick="delMemo('${m.id}')">删除</button>
+    </div>
+  </div>`).join('');
+  $('memos').innerHTML = html;
+}
+
+function editMemo(id) {
+  let m = getMemos().find(x => x.id === id);
+  if(!m) return;
+  editingId = m.id;
+  $('title').value = m.title;
+  $('content').value = m.content;
+  files = [];
+  showFiles();
+}
+
+function delMemo(id) {
+  if(!confirm('确定删除？')) return;
+  let memos = getMemos().filter(m => m.id !== id);
+  saveMemos(memos);
+  render();
+}
+
+// 存储
+function getMemos() {
+  return JSON.parse(localStorage.getItem('memos') || '[]');
+}
+function saveMemos(arr) {
+  localStorage.setItem('memos', JSON.stringify(arr));
+}
+
+// 导出 Excel
+function exportExcel() {
+  let memos = getMemos();
+  let data = memos.map(m => ({
+    序号: memos.indexOf(m)+1,
+    标题: m.title,
+    内容: m.content,
+    时间: m.time,
+    附件数: m.files.length
+  }));
+  let ws = XLSX.utils.json_to_sheet(data);
+  let wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "备忘录");
+  XLSX.writeFile(wb, "工作备忘录.xlsx");
+}
+
+// 导出所有文件 → 压缩包
+async function exportAllFiles() {
+  let memos = getMemos();
+  let zip = new JSZip();
+
+  for(let m of memos) {
+    let folder = zip.folder(m.title.replace(/[\\/:*?"<>|]/g, '_'));
+    for(let f of m.files) {
+      let blob = await getFileBlob(f.base64, f.type);
+      folder.file(f.name, blob);
+    }
+  }
+
+  zip.generateAsync({ type:"blob" }).then(blob => {
+    saveAs(blob, "备忘录附件.zip");
+  });
+}
+
+async function getFileBlob(base64, type) {
+  if(!base64) return new Blob([], {type});
+  const res = await fetch(base64);
+  return await res.blob();
+}
+
+// 导入（修改为Excel导入）
+function importData() {
+  $('importFile').click();
+}
+
+function doImport(e) {
+  let file = e.target.files[0];
+  if(!file) return;
+
+  // 检查文件类型
+  const fileExt = file.name.split('.').pop().toLowerCase();
+  if(!['xlsx', 'xls'].includes(fileExt)) {
+    alert('请选择Excel文件（.xlsx 或 .xls）');
+    return;
+  }
+
+  let fr = new FileReader();
+  fr.onload = ev => {
+    try {
+      // 解析Excel文件
+      const data = new Uint8Array(ev.target.result);
+      const workbook = XLSX.read(data, { type: 'array' });
+
+      // 获取第一个工作表
+      const firstSheetName = workbook.SheetNames[0];
+      const worksheet = workbook.Sheets[firstSheetName];
+
+      // 转换为JSON
+      const excelData = XLSX.utils.sheet_to_json(worksheet);
+
+      // 转换为备忘录格式
+      const memos = excelData.map(item => {
+        return {
+          id: Date.now() + Math.random().toString(36).substr(2, 9), // 生成唯一ID
+          title: item.标题 || '',
+          content: item.内容 || '',
+          time: item.时间 || new Date().toLocaleString(),
+          files: item.附件数 ? Array.from({length: item.附件数}, () => ({
+            name: '',
+            size: 0,
+            type: '',
+            base64: null
+          })) : []
+        };
+      });
+
+      if(confirm('覆盖现有数据？')) {
+        saveMemos(memos);
+        render();
+        alert(`导入成功！共导入 ${memos.length} 条记录`);
+      }
+    } catch(err) {
+      console.error('导入失败', err);
+      alert('导入失败，请检查Excel文件格式是否正确');
+    }
+  };
+  fr.readAsArrayBuffer(file);
+}
+
+// 初始化
+render();
+</script>
+</body>
+</html>
